@@ -43,6 +43,12 @@ class CreateVersionRequest(BaseModel):
     description: str | None = None
 
 
+# Maximum number of feature versions to keep.  When a new version is created,
+# the oldest versions beyond this limit are automatically deleted along with
+# their computed features.
+MAX_FEATURE_VERSIONS = 3
+
+
 class VersionResponse(BaseModel):
     id: int
     name: str
@@ -160,6 +166,27 @@ def list_versions(db: Session = Depends(get_db)):
     ]
 
 
+def _enforce_version_retention(db: Session) -> None:
+    """Delete the oldest feature versions beyond MAX_FEATURE_VERSIONS."""
+    from app.models.feature_version import FeatureVersion
+    from app.models.computed_feature import ComputedFeature
+
+    all_versions = (
+        db.query(FeatureVersion)
+        .order_by(FeatureVersion.created_at.desc())
+        .all()
+    )
+    if len(all_versions) <= MAX_FEATURE_VERSIONS:
+        return
+
+    to_delete = all_versions[MAX_FEATURE_VERSIONS:]
+    for v in to_delete:
+        db.query(ComputedFeature).filter(ComputedFeature.version_id == v.id).delete()
+        db.delete(v)
+        logger.info("Retention policy: deleted feature version '%s' (id=%d)", v.name, v.id)
+    db.commit()
+
+
 @router.post("/versions", status_code=201)
 def create_version(req: CreateVersionRequest, db: Session = Depends(get_db)):
     """
@@ -187,6 +214,9 @@ def create_version(req: CreateVersionRequest, db: Session = Depends(get_db)):
     db.add(version)
     db.commit()
     db.refresh(version)
+
+    # Enforce retention policy — delete oldest versions beyond the limit
+    _enforce_version_retention(db)
 
     return {
         "id": version.id,

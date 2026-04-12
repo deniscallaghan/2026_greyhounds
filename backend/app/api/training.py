@@ -1,5 +1,7 @@
 """Training API: create experiments, trigger training, view results."""
 
+import logging
+import os
 from threading import Thread
 from typing import Any
 
@@ -7,12 +9,15 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from app.config import settings
 from app.database import get_db, SessionLocal
 from app.models.experiment import Experiment
 from app.models.feature_definition import FeatureDefinition
 from app.schemas.experiment import ExperimentCreate, ExperimentResponse
 from ml.autoresearch import OBJECTIVE_DIRECTIONS
 from ml.trainers.base import BaseTrainer
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/training", tags=["training"])
 
@@ -104,6 +109,17 @@ def delete_experiment(experiment_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Experiment not found")
     db.delete(experiment)
     db.commit()
+
+    # Clean up model artifact on disk
+    model_path = os.path.join(
+        settings.model_artifacts_dir, f"experiment_{experiment_id}.joblib"
+    )
+    if os.path.isfile(model_path):
+        try:
+            os.remove(model_path)
+            logger.info("Deleted model artifact: %s", model_path)
+        except OSError as e:
+            logger.warning("Failed to delete model artifact %s: %s", model_path, e)
 
 
 # ---------------------------------------------------------------------------
